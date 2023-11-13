@@ -219,6 +219,7 @@ func (s *ChainService) ConnectedCount() int32 {
 func (s *ChainService) ConnectedPeers() (<-chan query.Peer, func(), error) {
 	replyChan := make(chan subConnPeersReply, 1)
 
+	// Send a query for a subscription for the connected peers.
 	select {
 	case s.query <- subConnPeersMsg{
 		reply: replyChan,
@@ -227,6 +228,7 @@ func (s *ChainService) ConnectedPeers() (<-chan query.Peer, func(), error) {
 		return nil, nil, ErrShuttingDown
 	}
 
+	// Wait for the result here.
 	select {
 	case reply := <-replyChan:
 		return reply.peerChan, func() {
