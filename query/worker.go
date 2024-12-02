@@ -2,6 +2,7 @@ package query
 
 import (
 	"errors"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/wire"
@@ -24,11 +25,12 @@ var (
 // queryJob is the internal struct that wraps the Query to work on, in
 // addition to some information about the query.
 type queryJob struct {
-	tries      uint8
-	index      uint64
-	timeout    time.Duration
-	encoding   wire.MessageEncoding
-	cancelChan <-chan struct{}
+	tries              uint8
+	index              uint64
+	timeout            time.Duration
+	encoding           wire.MessageEncoding
+	cancelChan         <-chan struct{}
+	internalCancelChan <-chan struct{}
 	*Request
 }
 
@@ -57,6 +59,10 @@ type jobResult struct {
 type worker struct {
 	peer Peer
 
+	// quit indicates that the worker has already quit and is not accepting
+	// any more jobs.
+	quit int32
+
 	// nextJob is a channel of queries to be distributed, where the worker
 	// will poll new work from.
 	nextJob chan *queryJob
@@ -69,7 +75,7 @@ var _ Worker = (*worker)(nil)
 func NewWorker(peer Peer) Worker {
 	return &worker{
 		peer:    peer,
-		nextJob: make(chan *queryJob),
+		nextJob: make(chan *queryJob, maxJobs),
 	}
 }
 
@@ -87,7 +93,10 @@ func (w *worker) Run(results chan<- *jobResult, quit <-chan struct{}) {
 
 	// Subscribe to messages from the peer.
 	msgChan, cancel := peer.SubscribeRecvMsg()
-	defer cancel()
+	defer func() {
+		atomic.AddInt32(&w.quit, 1)
+		cancel()
+	}()
 
 	for {
 		log.Tracef("Worker %v waiting for more work", peer.Addr())
@@ -125,6 +134,16 @@ func (w *worker) Run(results chan<- *jobResult, quit <-chan struct{}) {
 
 			// We break to the below loop, where we'll check the
 			// cancel channel again and the ErrJobCanceled
+			// result will be sent back.
+			break
+
+		case <-job.internalCancelChan:
+			log.Tracef("Worker %v found job with index %v "+
+				"already internally canceled (batch timed out)",
+				peer.Addr(), job.Index())
+
+			// We break to the below loop, where we'll check the
+			// internal cancel channel again and the ErrJobCanceled
 			// result will be sent back.
 			break
 
@@ -214,6 +233,13 @@ func (w *worker) Run(results chan<- *jobResult, quit <-chan struct{}) {
 				jobErr = ErrJobCanceled
 				break Loop
 
+			case <-job.internalCancelChan:
+				log.Tracef("Worker %v job %v internally "+
+					"canceled", peer.Addr(), job.Index())
+
+				jobErr = ErrJobCanceled
+				break Loop
+
 			case <-quit:
 				return
 			}
@@ -248,5 +274,10 @@ func (w *worker) Run(results chan<- *jobResult, quit <-chan struct{}) {
 //
 // NOTE: Part of the Worker interface.
 func (w *worker) NewJob() chan<- *queryJob {
+	// The worker has already quit so don't return the nextJob channel.
+	if atomic.LoadInt32(&w.quit) != 0 {
+		return nil
+	}
+
 	return w.nextJob
 }
