@@ -101,7 +101,7 @@ func startWorker() (*testCtx, error) {
 		subscriptions: make(chan chan wire.Message),
 		quit:          make(chan struct{}),
 	}
-	results := make(chan *jobResult)
+	results := make(chan *jobResult, maxJobs)
 	quit := make(chan struct{})
 
 	wk := NewWorker(peer)
