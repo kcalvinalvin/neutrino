@@ -15,6 +15,9 @@ const (
 
 	// maxQueryTimeout is the maximum timeout given to a single query.
 	maxQueryTimeout = 32 * time.Second
+
+	// maxJobs is the maximum amount of jobs a single worker can have.
+	maxJobs = 32
 )
 
 var (
@@ -74,7 +77,6 @@ type PeerRanking interface {
 
 // activeWorker wraps a Worker that is currently running, together with the job
 // we have given to it.
-// TODO(halseth): support more than one active job at a time.
 type activeWorker struct {
 	w          Worker
 	activeJobs map[uint64]*queryJob
@@ -202,8 +204,10 @@ func (w *peerWorkManager) handleJobResult(result *jobResult) {
 
 	// Delete the job from the worker's active job, such
 	// that the slot gets opened for more work.
-	r := w.workers[result.peer.Addr()]
-	delete(r.activeJobs, result.job.Index())
+	r, found := w.workers[result.peer.Addr()]
+	if found {
+		delete(r.activeJobs, result.job.Index())
+	}
 
 	// Get the index of this query's batch, and delete it
 	// from the map of current queries, since we don't have
@@ -438,7 +442,7 @@ Loop:
 			for p, r := range w.workers {
 				// Only one active job at a time is currently
 				// supported.
-				if len(r.activeJobs) >= 1 {
+				if len(r.activeJobs) >= maxJobs {
 					continue
 				}
 
